@@ -53,6 +53,8 @@ import PDF from "pdf-vue3";
 |   `disableRange`   | Disable range request loading of PDF files. When enabled, and if the server supports partial content requests, then the PDF will be fetched in chunks. The default value is `false`. |              `boolean`               |
 |  `disableStream`   | Disable streaming of PDF file data. By default PDF.js attempts to load PDF files in chunks. The default value is `false`. |              `boolean`               |
 | `disableAutoFetch` | Disable pre-fetching of PDF file data. When range requests are enabled PDF.js will automatically keep fetching more data even if it isn't needed to display the current page. The default value is `false`. NOTE: It is also necessary to disable streaming, see above, in order for disabling of pre-fetching to work correctly. |              `boolean`               |
+|  `adInterval`   | Show ad after every N pages. (e.g. 10 means show ad after each 10 pages) |              `number`               |
+|  `adContent`   | HTML or script content to show as the ad block. |               `string`               |
 
 ### `Events`
 
