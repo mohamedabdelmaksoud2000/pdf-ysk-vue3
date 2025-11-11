@@ -21,6 +21,8 @@ const props = withDefaults(
     disableStream?: boolean;
     disableAutoFetch?: boolean;
     // --custom--
+    adInterval?: number;
+    adContent?: string;
     showProgress?: boolean;
     progressColor?: string;
     showPageTooltip?: boolean;
@@ -42,6 +44,8 @@ const props = withDefaults(
     disableRange: undefined,
     disableStream: undefined,
     disableAutoFetch: undefined,
+    adInterval: 10,
+    adContent: "",
     showProgress: true,
     progressColor: "#87ceeb",
     showPageTooltip: true,
@@ -189,6 +193,32 @@ const renderPDF = async () => {
         canvasContext: context as CanvasRenderingContext2D,
         viewport: scaledViewport,
       });
+      if ((i + 1) % props.adInterval === 0 && props.adContent) {
+        const adWrapper = document.createElement('div');
+        adWrapper.className = 'pdf-inline-ad';
+        adWrapper.style.cssText = `
+          text-align:center;
+          margin: 20px auto;
+          padding: 10px;
+          background: #f9f9f9;
+          border-radius: 8px;
+          width: 90%;
+        `;
+        adWrapper.innerHTML = props.adContent;
+        
+        const parent = canvas.parentNode as HTMLElement;
+        parent.insertAdjacentElement('afterend', adWrapper);
+
+        const scripts = adWrapper.querySelectorAll('script');
+        scripts.forEach(oldScript => {
+          const newScript = document.createElement('script');
+          Array.from(oldScript.attributes).forEach(attr => {
+            newScript.setAttribute(attr.name, attr.value);
+          });
+          newScript.textContent = oldScript.textContent;
+          oldScript.replaceWith(newScript);
+        });
+      }
     } catch (error) {
       console.error("Error rendering PDF:", error);
     }

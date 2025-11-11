@@ -1,6 +1,7 @@
 {
-  "name": "pdf-vue3",
-  "version": "1.0.12",
+  "name": "@ysk/vue3-lib",
+  "version": "1.0.0",
+  "private": false,
   "description": "vue3 pdf viewer",
   "main": "./dist/pdf-vue3.js",
   "types": "./dist/types/index.d.ts",
