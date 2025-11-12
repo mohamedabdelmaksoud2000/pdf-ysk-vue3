@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
+import path from 'path'
 
 export default defineConfig({
   plugins: [
@@ -7,12 +8,18 @@ export default defineConfig({
   ],
   build: {
     lib: {
-      entry: 'src/index.ts',
+      entry: path.resolve(__dirname, 'src/index.ts'),
       name: 'pdf-vue3',
       formats: ['es'],
+      fileName: (format) => `pdf-vue3.${format}.js`,
     },
     rollupOptions: {
       external: ['vue'],
-    }
-  }
+      output: {
+        globals: {
+          vue: 'Vue',
+        },
+      },
+    },
+  },
 })
