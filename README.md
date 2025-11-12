@@ -1,7 +1,5 @@
 # pdf-vue3
 
-[English](./README.md) ｜ [中文](./README_ZH.md)
-
 vue3 pdf viewer
 
 example: <https://hymhub.github.io/pdf-vue3/>

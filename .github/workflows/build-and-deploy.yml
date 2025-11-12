@@ -1,25 +1,28 @@
-name: Deploy to GitHub Pages
+name: Publish to npm
+
 on:
   push:
     branches:
-      - main
+      - main   
 jobs:
-  deploy:
+  publish:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
-      - name: Use Node.js 16.x
-        uses: actions/setup-node@v2
+      - uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
         with:
-          node-version: "16.x"
+          node-version: 18
+          registry-url: https://registry.npmjs.org
+
       - name: Install dependencies
-        working-directory: ./pdf-vue3-example
         run: npm install
-      - name: Build
-        working-directory: ./pdf-vue3-example
+
+      - name: Build library
         run: npm run build
-      - name: Deploy to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v3
-        with:
-          personal_token: ${{ secrets.ACCESS_TOKEN }}
-          publish_dir: ./pdf-vue3-example/dist
+
+      - name: Publish to npm
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

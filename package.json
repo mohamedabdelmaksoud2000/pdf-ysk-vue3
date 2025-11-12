@@ -1,7 +1,6 @@
 {
-  "name": "@ysk/vue3-lib",
-  "version": "1.0.0",
-  "private": false,
+  "name": "pdf-ysk-vue3",
+  "version": "1.0.1",
   "description": "vue3 pdf viewer",
   "main": "./dist/pdf-vue3.js",
   "types": "./dist/types/index.d.ts",
@@ -13,7 +12,8 @@
   },
   "scripts": {
     "tsc": "vue-tsc --noEmit && vue-tsc --emitDeclarationOnly --allowJs",
-    "build": "vite build && npm run tsc"
+    "build": "vite build && npm run tsc",
+    "postinstall": "npx vite build && npm run tsc"
   },
   "files": [
     "dist"
@@ -21,14 +21,14 @@
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/hymhub/pdf-vue3.git"
+    "url": "git+https://github.com/mohamedabdelmaksoud2000/pdf-ysk-vue3.git"
   },
   "author": "hyminghan",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/hymhub/pdf-vue3/issues"
+    "url": "https://github.com/mohamedabdelmaksoud2000/pdf-ysk-vue3/issues"
   },
-  "homepage": "https://github.com/hymhub/pdf-vue3#readme",
+  "homepage": "https://github.com/mohamedabdelmaksoud2000/pdf-ysk-vue3#readme",
   "keywords": [
     "pdf-vue3",
     "pdf",
