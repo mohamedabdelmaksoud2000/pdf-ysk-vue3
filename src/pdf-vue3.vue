@@ -4,7 +4,9 @@ import type { PDFDocumentProxy } from "./index";
 
 let GlobalWorkerOptions: any, getDocument: any;
 const dpr = ref(1);
-
+defineOptions({
+  name: "pdf-ysk-vue3",
+});
 const props = withDefaults(
   defineProps<{
     /**
@@ -194,8 +196,8 @@ const renderPDF = async () => {
         viewport: scaledViewport,
       });
       if ((i + 1) % props.adInterval === 0 && props.adContent) {
-        const adWrapper = document.createElement('div');
-        adWrapper.className = 'pdf-inline-ad';
+        const adWrapper = document.createElement("div");
+        adWrapper.className = "pdf-inline-ad";
         adWrapper.style.cssText = `
           text-align:center;
           margin: 20px auto;
@@ -205,14 +207,14 @@ const renderPDF = async () => {
           width: 90%;
         `;
         adWrapper.innerHTML = props.adContent;
-        
-        const parent = canvas.parentNode as HTMLElement;
-        parent.insertAdjacentElement('afterend', adWrapper);
 
-        const scripts = adWrapper.querySelectorAll('script');
-        scripts.forEach(oldScript => {
-          const newScript = document.createElement('script');
-          Array.from(oldScript.attributes).forEach(attr => {
+        const parent = canvas.parentNode as HTMLElement;
+        parent.insertAdjacentElement("afterend", adWrapper);
+
+        const scripts = adWrapper.querySelectorAll("script");
+        scripts.forEach((oldScript) => {
+          const newScript = document.createElement("script");
+          Array.from(oldScript.attributes).forEach((attr) => {
             newScript.setAttribute(attr.name, attr.value);
           });
           newScript.textContent = oldScript.textContent;
