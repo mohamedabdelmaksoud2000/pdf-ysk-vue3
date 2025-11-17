@@ -9,9 +9,9 @@ export default defineConfig({
   build: {
     lib: {
       entry: path.resolve(__dirname, 'src/index.ts'),
-      name: 'pdf-vue3',
+      name: 'pdf-ysk-vue3',
       formats: ['es'],
-      fileName: (format) => `pdf-vue3.${format}.js`,
+      fileName: (format) => `pdf-ysk-vue3.${format}.js`,
     },
     rollupOptions: {
       external: ['vue'],
