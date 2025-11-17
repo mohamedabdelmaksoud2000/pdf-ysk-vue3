@@ -1,4 +1,4 @@
-import PDF from './pdf-vue3.vue';
+import PDF from './pdf-ysk-vue3.vue';
 export default PDF;
 
 export type PDFDocumentProxy = {

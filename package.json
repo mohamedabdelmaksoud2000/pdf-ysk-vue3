@@ -1,13 +1,13 @@
 {
   "name": "pdf-ysk-vue3",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "vue3 pdf viewer",
-  "main": "./dist/pdf-vue3.js",
+  "main": "./dist/pdf-vue3.es.js",
   "types": "./dist/types/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/types/index.d.ts",
-      "import": "./dist/pdf-vue3.js"
+      "import": "./dist/pdf-vue3.es.js"
     }
   },
   "scripts": {
