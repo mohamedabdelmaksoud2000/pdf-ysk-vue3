@@ -1,5 +1,13 @@
 <script setup lang="ts">
-import { ref, onUnmounted, Ref, computed, watch, onBeforeMount } from "vue";
+import {
+  ref,
+  onUnmounted,
+  Ref,
+  computed,
+  watch,
+  onBeforeMount,
+  nextTick,
+} from "vue";
 import type { PDFDocumentProxy } from "./index";
 
 let GlobalWorkerOptions: any, getDocument: any;
@@ -169,6 +177,7 @@ const renderPDF = async () => {
   } catch (error) {
     console.error("Error loadingTask PDF:", error);
   }
+  
   let calcH = 0;
   for (let i = 0; i < totalPages.value; i++) {
     try {
@@ -189,12 +198,18 @@ const renderPDF = async () => {
       const scaledViewport = page.getViewport({ scale: scale * dpr.value });
       canvas.width = scaledViewport.width;
       canvas.height = scaledViewport.height;
-      itemHeightList.value[i] = calcH +=
-        scaledViewport.height / dpr.value + rowGap.value;
+      
+      // Store canvas height first
+      const canvasHeight = scaledViewport.height / dpr.value + rowGap.value;
+      itemHeightList.value[i] = calcH + canvasHeight;
+      calcH += canvasHeight;
+      
       await page.render({
         canvasContext: context as CanvasRenderingContext2D,
         viewport: scaledViewport,
       });
+      
+      // Inject ad immediately after this page
       if ((i + 1) % props.adInterval === 0 && props.adContent) {
         const adWrapper = document.createElement("div");
         adWrapper.className = "pdf-inline-ad";
@@ -220,10 +235,24 @@ const renderPDF = async () => {
           newScript.textContent = oldScript.textContent;
           oldScript.replaceWith(newScript);
         });
+
+        // Update the height calculation to include the ad
+        // Estimate ad height (you might need to adjust this)
+        const adHeight = 100; // approximate ad height + margins
+        itemHeightList.value[i] += adHeight;
+        calcH += adHeight;
+        
+        // Update all subsequent item heights
+        for (let j = i + 1; j < itemHeightList.value.length; j++) {
+          if (itemHeightList.value[j]) {
+            itemHeightList.value[j] += adHeight;
+          }
+        }
       }
     } catch (error) {
       console.error("Error rendering PDF:", error);
     }
+    
     if (
       props.page &&
       (i === props.page - 1 ||
