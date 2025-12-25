@@ -251,65 +251,86 @@ const renderPDF = async () => {
       if (entry.isIntersecting) {
         const pageIndex = Number((entry.target as HTMLElement).dataset.pageIndex);
         renderPage(pageIndex + 1);
-        // Optional: unobserve after render if we don't want to handle re-render on scroll back
-        // For now, we keep it simple. If we want to unload pages, we'd need more logic.
-        // To strictly follow "render on scroll into it", we observe. 
-        // If we want to render ONCE, we can unobserve.
         observer.unobserve(entry.target);
       }
     });
   }, {
-    root: scroller.value, // Use the scroller as the root
-    rootMargin: "200px", // Pre-render pages slightly before they come into view
-    threshold: 0.1
+    root: scroller.value,
+    rootMargin: "0px", // Render only when page enters viewport
+    threshold: 0.01 // Trigger as soon as 1% is visible
   });
 
   let calcH = 0;
-  for (let i = 0; i < totalPages.value; i++) {
-    try {
-      const page = await pdf.getPage(i + 1);
-      // ----
-      if (cancelRendering.value) {
+  
+  // Optimization: Fetch pages in batches to speed up layout without blocking too much
+  const BATCH_SIZE = 10;
+  for (let i = 0; i < totalPages.value; i += BATCH_SIZE) {
+    if (cancelRendering.value) {
         cancelRendering.value = false;
         renderPDF();
         break;
-      }
-      // ----
-      const canvas = canvasRefs.value[i].value[0];
-      
-      // Layout phase: Set dimensions
-      var viewport = page.getViewport({ scale: 1 });
-      var scale =
-        ((canvas.parentNode as HTMLDivElement).clientWidth - 4) /
-        viewport.width;
-      
-      const scaledViewport = page.getViewport({ scale: scale * dpr.value });
-      canvas.width = scaledViewport.width;
-      canvas.height = scaledViewport.height;
-      
-      // Store height for scrolling logic
-      itemHeightList.value[i] = calcH +=
-        scaledViewport.height / dpr.value + rowGap.value;
+    }
 
-      // Set data attribute for observer
-      canvas.dataset.pageIndex = String(i);
-      
-      // Start observing
-      observer.observe(canvas);
+    const batchPromises = [];
+    const end = Math.min(i + BATCH_SIZE, totalPages.value);
+    
+    for (let j = i; j < end; j++) {
+        batchPromises.push(pdf.getPage(j + 1));
+    }
+
+    try {
+        const pages = await Promise.all(batchPromises);
+        
+        for (let k = 0; k < pages.length; k++) {
+            const page = pages[k];
+            const pageIndex = i + k;
+            const canvas = canvasRefs.value[pageIndex].value[0];
+            
+            // Layout phase: Set dimensions
+            var viewport = page.getViewport({ scale: 1 });
+            var scale =
+                ((canvas.parentNode as HTMLDivElement).clientWidth - 4) /
+                viewport.width;
+            
+            const scaledViewport = page.getViewport({ scale: scale * dpr.value });
+            canvas.width = scaledViewport.width;
+            canvas.height = scaledViewport.height;
+            
+            // Draw Loading text
+            const context = canvas.getContext("2d");
+            if (context) {
+                context.font = "20px Arial";
+                context.fillStyle = "#999";
+                context.textAlign = "center";
+                context.fillText("Loading...", canvas.width / 2, canvas.height / 2);
+            }
+
+            // Store height for scrolling logic
+            itemHeightList.value[pageIndex] = calcH +=
+                scaledViewport.height / dpr.value + rowGap.value;
+
+            // Set data attribute for observer
+            canvas.dataset.pageIndex = String(pageIndex);
+            
+            // Start observing
+            observer.observe(canvas);
+            
+            if (pageIndex === totalPages.value - 1) {
+                renderComplete.value = true;
+            }
+        }
+        
+        // Update scroll position if needed (only once per batch or per page? Per batch is fine)
+        // We need to check if we are at the target page
+        if (props.page) {
+             const targetIndex = props.page - 1;
+             if (targetIndex >= i && targetIndex < end) {
+                 scroller.value.scrollTo(0, (itemHeightList.value[targetIndex - 1] ?? 0) + 2);
+             }
+        }
 
     } catch (error) {
-      console.error("Error laying out PDF page:", error);
-    }
-    
-    if (
-      props.page &&
-      (i === props.page - 1 ||
-        (props.page > totalPages.value && i === totalPages.value - 1))
-    ) {
-      scroller.value.scrollTo(0, (itemHeightList.value[i - 1] ?? 0) + 2);
-    }
-    if (i === totalPages.value - 1) {
-      renderComplete.value = true;
+        console.error("Error laying out PDF pages batch:", error);
     }
   }
 };
