@@ -150,53 +150,42 @@ const itemHeightList = ref<Array<number>>([]);
 const scroller = ref<HTMLDivElement>() as Ref<HTMLDivElement>;
 const container = ref<HTMLDivElement>() as Ref<HTMLDivElement>;
 
+const renderedPages = ref(new Set<number>());
+let observer: IntersectionObserver;
 let pdf: PDFDocumentProxy;
 const cancelRendering = ref(false);
 const renderComplete = ref(false);
-const renderPDF = async () => {
-  renderComplete.value = false;
+
+const renderPage = async (pageNumber: number) => {
+  if (renderedPages.value.has(pageNumber)) return;
+  
   try {
-    if (!pdf) {
-      pdf = await loadingTask.value.promise;
-      const refs = [];
-      for (let i = 0; i < pdf.numPages; i++) {
-        refs.push(ref() as Ref<Array<HTMLCanvasElement>>);
-      }
-      canvasRefs.value = refs;
-      totalPages.value = pdf.numPages;
-      emit("onPdfInit", pdf);
-    }
-  } catch (error) {
-    console.error("Error loadingTask PDF:", error);
-  }
-  let calcH = 0;
-  for (let i = 0; i < totalPages.value; i++) {
-    try {
-      const page = await pdf.getPage(i + 1);
-      // ----
-      if (cancelRendering.value) {
-        cancelRendering.value = false;
-        renderPDF();
-        break;
-      }
-      // ----
-      const canvas = canvasRefs.value[i].value[0];
-      var viewport = page.getViewport({ scale: 1 });
-      var scale =
-        ((canvas.parentNode as HTMLDivElement).clientWidth - 4) /
-        viewport.width;
-      const context = canvas.getContext("2d");
-      const scaledViewport = page.getViewport({ scale: scale * dpr.value });
-      canvas.width = scaledViewport.width;
-      canvas.height = scaledViewport.height;
-      itemHeightList.value[i] = calcH +=
-        scaledViewport.height / dpr.value + rowGap.value;
-      await page.render({
-        canvasContext: context as CanvasRenderingContext2D,
-        viewport: scaledViewport,
-      });
-      if ((i + 1) % props.adInterval === 0 && props.adContent) {
-        // Create <ins> ad element
+    const page = await pdf.getPage(pageNumber);
+    const canvas = canvasRefs.value[pageNumber - 1].value[0];
+    const context = canvas.getContext("2d");
+    
+    // We already set the dimensions in the layout phase, but we need the viewport for rendering
+    // Re-calculate viewport to ensure correctness or store it? 
+    // Storing might consume memory, re-calculating is cheap.
+    // We need the scale again.
+    const viewport = page.getViewport({ scale: 1 });
+    const scale = ((canvas.parentNode as HTMLDivElement).clientWidth - 4) / viewport.width;
+    const scaledViewport = page.getViewport({ scale: scale * dpr.value });
+
+    await page.render({
+      canvasContext: context as CanvasRenderingContext2D,
+      viewport: scaledViewport,
+    }).promise;
+
+    renderedPages.value.add(pageNumber);
+
+    // Ad insertion logic - moved here to ensure it happens after render or we can do it in layout?
+    // If we do it in layout, the ad might load before the page is visible? 
+    // Better to keep it here or check if it needs to be visible.
+    // The original code inserted it after render. Let's keep it here.
+    if (pageNumber % props.adInterval === 0 && props.adContent) {
+        // Check if ad already exists to avoid duplicates if re-rendered (though we check renderedPages)
+        // logic from original code
         const adWrapper = document.createElement("ins");
         adWrapper.className = "adsbygoogle";
         adWrapper.style.cssText = `
@@ -212,30 +201,106 @@ const renderPDF = async () => {
         adWrapper.setAttribute("data-full-width-responsive", "true");
 
         // Insert the <ins> AFTER the canvas
-        const parent = canvas.parentNode as HTMLElement;
-        parent.insertAdjacentElement("afterend", adWrapper);
+        // Fix: Insert after the canvas itself, not the parent container
+        if (canvas.nextElementSibling?.className !== 'adsbygoogle') {
+             canvas.insertAdjacentElement("afterend", adWrapper);
 
-        // Create <script> for AdSense refresh
-        const script = document.createElement("script");
-        script.textContent =
-          "(adsbygoogle = window.adsbygoogle || []).push({});";
+            // Create <script> for AdSense refresh
+            const script = document.createElement("script");
+            script.textContent =
+            "(adsbygoogle = window.adsbygoogle || []).push({});";
 
-        // Insert script after <ins>
-        adWrapper.insertAdjacentElement("afterend", script);
-
-        const scripts = adWrapper.querySelectorAll("script");
-        scripts.forEach((oldScript) => {
-          const newScript = document.createElement("script");
-          Array.from(oldScript.attributes).forEach((attr) => {
-            newScript.setAttribute(attr.name, attr.value);
-          });
-          newScript.textContent = oldScript.textContent;
-          oldScript.replaceWith(newScript);
-        });
-      }
-    } catch (error) {
-      console.error("Error rendering PDF:", error);
+            // Insert script after <ins>
+            adWrapper.insertAdjacentElement("afterend", script);
+        }
     }
+
+  } catch (error) {
+    console.error(`Error rendering page ${pageNumber}:`, error);
+  }
+};
+
+const renderPDF = async () => {
+  renderComplete.value = false;
+  renderedPages.value.clear();
+  
+  // Disconnect previous observer if exists
+  if (observer) {
+    observer.disconnect();
+  }
+
+  try {
+    if (!pdf) {
+      pdf = await loadingTask.value.promise;
+      const refs = [];
+      for (let i = 0; i < pdf.numPages; i++) {
+        refs.push(ref() as Ref<Array<HTMLCanvasElement>>);
+      }
+      canvasRefs.value = refs;
+      totalPages.value = pdf.numPages;
+      emit("onPdfInit", pdf);
+    }
+  } catch (error) {
+    console.error("Error loadingTask PDF:", error);
+    return;
+  }
+
+  // Initialize IntersectionObserver
+  observer = new IntersectionObserver((entries) => {
+    entries.forEach((entry) => {
+      if (entry.isIntersecting) {
+        const pageIndex = Number((entry.target as HTMLElement).dataset.pageIndex);
+        renderPage(pageIndex + 1);
+        // Optional: unobserve after render if we don't want to handle re-render on scroll back
+        // For now, we keep it simple. If we want to unload pages, we'd need more logic.
+        // To strictly follow "render on scroll into it", we observe. 
+        // If we want to render ONCE, we can unobserve.
+        observer.unobserve(entry.target);
+      }
+    });
+  }, {
+    root: scroller.value, // Use the scroller as the root
+    rootMargin: "200px", // Pre-render pages slightly before they come into view
+    threshold: 0.1
+  });
+
+  let calcH = 0;
+  for (let i = 0; i < totalPages.value; i++) {
+    try {
+      const page = await pdf.getPage(i + 1);
+      // ----
+      if (cancelRendering.value) {
+        cancelRendering.value = false;
+        renderPDF();
+        break;
+      }
+      // ----
+      const canvas = canvasRefs.value[i].value[0];
+      
+      // Layout phase: Set dimensions
+      var viewport = page.getViewport({ scale: 1 });
+      var scale =
+        ((canvas.parentNode as HTMLDivElement).clientWidth - 4) /
+        viewport.width;
+      
+      const scaledViewport = page.getViewport({ scale: scale * dpr.value });
+      canvas.width = scaledViewport.width;
+      canvas.height = scaledViewport.height;
+      
+      // Store height for scrolling logic
+      itemHeightList.value[i] = calcH +=
+        scaledViewport.height / dpr.value + rowGap.value;
+
+      // Set data attribute for observer
+      canvas.dataset.pageIndex = String(i);
+      
+      // Start observing
+      observer.observe(canvas);
+
+    } catch (error) {
+      console.error("Error laying out PDF page:", error);
+    }
+    
     if (
       props.page &&
       (i === props.page - 1 ||
