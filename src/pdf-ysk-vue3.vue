@@ -146,6 +146,7 @@ const totalPages = ref(0);
 const currentPage = ref(1);
 const scrollOffset = ref(0);
 const itemHeightList = ref<Array<number>>([]);
+const renderedCanvasCount = ref(10); // Start with 10 canvases
 
 const scroller = ref<HTMLDivElement>() as Ref<HTMLDivElement>;
 const container = ref<HTMLDivElement>() as Ref<HTMLDivElement>;
@@ -347,6 +348,15 @@ const handleScroll = (event: any) => {
   }, 1000);
   scrollOffset.value = event.target.scrollTop;
   emit("onScroll", event.target.scrollTop);
+  
+  // Virtual scrolling: Add more canvases as user scrolls down
+  if (renderedCanvasCount.value < totalPages.value) {
+    const scrollPercentage = (scroller.value.scrollTop + scroller.value.offsetHeight) / scroller.value.scrollHeight;
+    if (scrollPercentage > 0.7) { // When 70% scrolled, add more canvases
+      renderedCanvasCount.value = Math.min(renderedCanvasCount.value + 10, totalPages.value);
+    }
+  }
+  
   if (
     scroller.value.scrollTop + scroller.value.offsetHeight >=
     scroller.value.scrollHeight - 10
@@ -539,7 +549,7 @@ watch(
             :style="{
               marginBottom: `${rowGap}px`,
             }"
-            v-for="item in totalPages"
+            v-for="item in renderedCanvasCount"
             :key="item"
             :ref="canvasRefs[item - 1]"
           ></canvas>
