@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onUnmounted, Ref, computed, watch, onBeforeMount } from "vue";
 import type { PDFDocumentProxy } from "./index";
-import { RecycleScroller } from "vue-virtual-scroller";
+import { RecycleScroller, DynamicScroller, DynamicScrollerItem } from "vue-virtual-scroller";
 import "vue-virtual-scroller/dist/vue-virtual-scroller.css";
 
 let GlobalWorkerOptions: any, getDocument: any;
@@ -194,6 +194,11 @@ const renderPage = async (pageNumber: number) => {
     const viewport = page.getViewport({ scale: 1 });
     const scale = ((canvas.parentNode as HTMLDivElement).clientWidth - 4) / viewport.width;
     const scaledViewport = page.getViewport({ scale: scale * dpr.value });
+
+    canvas.width = scaledViewport.width;
+    canvas.height = scaledViewport.height;
+    canvas.style.width = `${scaledViewport.width / dpr.value}px`;
+    canvas.style.height = `${scaledViewport.height / dpr.value}px`;
 
     await page.render({
       canvasContext: context as CanvasRenderingContext2D,
@@ -524,15 +529,21 @@ watch(
               : `${props.pdfWidth}px`,
           }"
         >
-          <RecycleScroller
+          <DynamicScroller
             class="pdf-scroller"
             :items="pages"
-            :item-size="null"
+            :min-item-size="50"
             key-field="pageNumber"
             :prerender="10"
-            v-slot="{ item }"
+            v-slot="{ item, index, active }"
           >
-            <canvas
+            <DynamicScrollerItem
+              :item="item"
+              :active="active"
+              :size-dependencies="[item.pageNumber]"
+              :data-index="index"
+            >
+              <canvas
               style="
                 display: block;
                 box-shadow: #a9a9a9 0px 1px 3px 0px;
@@ -546,7 +557,8 @@ watch(
               :key="item.pageNumber"
               :ref="(el) => setCanvasRef(el, item.pageNumber)"
             ></canvas>
-          </RecycleScroller>
+            </DynamicScrollerItem>
+          </DynamicScroller>
         </div>
       </div>
     </div>
@@ -664,5 +676,3 @@ watch(
     </div>
   </div>
 </template>
-
-<style></style>
