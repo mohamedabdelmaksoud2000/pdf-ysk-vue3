@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, onUnmounted, Ref, computed, watch, onBeforeMount } from "vue";
 import type { PDFDocumentProxy } from "./index";
+import { RecycleScroller } from "vue-virtual-scroller";
+import "vue-virtual-scroller/dist/vue-virtual-scroller.css";
 
 let GlobalWorkerOptions: any, getDocument: any;
 const dpr = ref(1);
@@ -79,7 +81,16 @@ const slots = defineSlots<{
   backToTopBtn?: (props: { scrollOffset: number }) => any;
 }>();
 
-const canvasRefs = ref<Array<Ref<Array<HTMLCanvasElement>>>>([]);
+const canvasMap = new Map<number, HTMLCanvasElement>();
+const setCanvasRef = (el: any, pageNumber: number) => {
+  if (el) {
+    canvasMap.set(pageNumber, el as HTMLCanvasElement);
+    // Trigger render if needed
+    renderPage(pageNumber);
+  } else {
+    canvasMap.delete(pageNumber);
+  }
+};
 
 interface Option extends Record<string, any> {
   url?: string;
@@ -146,13 +157,20 @@ const totalPages = ref(0);
 const currentPage = ref(1);
 const scrollOffset = ref(0);
 const itemHeightList = ref<Array<number>>([]);
-const renderedCanvasCount = ref(10); // Start with 10 canvases
+
+// Create array of page objects for RecycleScroller
+const pages = computed(() => {
+  const result = [];
+  for (let i = 1; i <= totalPages.value; i++) {
+    result.push({ pageNumber: i });
+  }
+  return result;
+});
 
 const scroller = ref<HTMLDivElement>() as Ref<HTMLDivElement>;
 const container = ref<HTMLDivElement>() as Ref<HTMLDivElement>;
 
 const renderedPages = ref(new Set<number>());
-let observer: IntersectionObserver;
 let pdf: PDFDocumentProxy;
 const cancelRendering = ref(false);
 const renderComplete = ref(false);
@@ -162,7 +180,11 @@ const renderPage = async (pageNumber: number) => {
   
   try {
     const page = await pdf.getPage(pageNumber);
-    const canvas = canvasRefs.value[pageNumber - 1].value[0];
+    // Get canvas from the ref map or find it in DOM? 
+    // Since we use setCanvasRef, we can store the element in a map
+    const canvas = canvasMap.get(pageNumber);
+    if (!canvas) return;
+
     const context = canvas.getContext("2d");
     
     // We already set the dimensions in the layout phase, but we need the viewport for rendering
@@ -226,18 +248,13 @@ const renderPDF = async () => {
   renderedPages.value.clear();
   
   // Disconnect previous observer if exists
-  if (observer) {
-    observer.disconnect();
-  }
+  // if (observer) {
+  //   observer.disconnect();
+  // }
 
   try {
     if (!pdf) {
       pdf = await loadingTask.value.promise;
-      const refs = [];
-      for (let i = 0; i < pdf.numPages; i++) {
-        refs.push(ref() as Ref<Array<HTMLCanvasElement>>);
-      }
-      canvasRefs.value = refs;
       totalPages.value = pdf.numPages;
       emit("onPdfInit", pdf);
     }
@@ -247,19 +264,14 @@ const renderPDF = async () => {
   }
 
   // Initialize IntersectionObserver
-  observer = new IntersectionObserver((entries) => {
-    entries.forEach((entry) => {
-      if (entry.isIntersecting) {
-        const pageIndex = Number((entry.target as HTMLElement).dataset.pageIndex);
-        renderPage(pageIndex + 1);
-        observer.unobserve(entry.target);
-      }
-    });
-  }, {
-    root: scroller.value,
-    rootMargin: "0px", // Render only when page enters viewport
-    threshold: 0.01 // Trigger as soon as 1% is visible
-  });
+  // With virtual scrolling, we might not need this observer for rendering, 
+  // but we might need it for tracking visibility if we want to know which pages are visible?
+  // Actually, RecycleScroller handles visibility. We just render when mounted.
+  // We can keep observer for "onPageChange" logic if we want to track the current page more accurately?
+  // But handleScroll already does that using itemHeightList.
+  // So we can remove the observer for rendering purposes.
+  
+  // if (observer) observer.disconnect();
 
   let calcH = 0;
   
@@ -285,37 +297,19 @@ const renderPDF = async () => {
         for (let k = 0; k < pages.length; k++) {
             const page = pages[k];
             const pageIndex = i + k;
-            const canvas = canvasRefs.value[pageIndex].value[0];
             
             // Layout phase: Set dimensions
+            // We don't have the canvas yet, so we use the container width
             var viewport = page.getViewport({ scale: 1 });
-            var scale =
-                ((canvas.parentNode as HTMLDivElement).clientWidth - 4) /
-                viewport.width;
+            const containerWidth = container.value.clientWidth;
+            var scale = (containerWidth - 4) / viewport.width;
             
             const scaledViewport = page.getViewport({ scale: scale * dpr.value });
-            canvas.width = scaledViewport.width;
-            canvas.height = scaledViewport.height;
             
-            // Draw Loading text
-            const context = canvas.getContext("2d");
-            if (context) {
-                context.font = "20px Arial";
-                context.fillStyle = "#999";
-                context.textAlign = "center";
-                context.fillText("Loading...", canvas.width / 2, canvas.height / 2);
-            }
-
             // Store height for scrolling logic
             itemHeightList.value[pageIndex] = calcH +=
                 scaledViewport.height / dpr.value + rowGap.value;
 
-            // Set data attribute for observer
-            canvas.dataset.pageIndex = String(pageIndex);
-            
-            // Start observing
-            observer.observe(canvas);
-            
             if (pageIndex === totalPages.value - 1) {
                 renderComplete.value = true;
             }
@@ -348,14 +342,6 @@ const handleScroll = (event: any) => {
   }, 1000);
   scrollOffset.value = event.target.scrollTop;
   emit("onScroll", event.target.scrollTop);
-  
-  // Virtual scrolling: Add more canvases as user scrolls down
-  if (renderedCanvasCount.value < totalPages.value) {
-    const scrollPercentage = (scroller.value.scrollTop + scroller.value.offsetHeight) / scroller.value.scrollHeight;
-    if (scrollPercentage > 0.7) { // When 70% scrolled, add more canvases
-      renderedCanvasCount.value = Math.min(renderedCanvasCount.value + 10, totalPages.value);
-    }
-  }
   
   if (
     scroller.value.scrollTop + scroller.value.offsetHeight >=
@@ -538,21 +524,29 @@ watch(
               : `${props.pdfWidth}px`,
           }"
         >
-          <canvas
-            style="
-              display: block;
-              box-shadow: #a9a9a9 0px 1px 3px 0px;
-              margin-left: auto;
-              margin-right: auto;
-              width: calc(100% - 4px);
-            "
-            :style="{
-              marginBottom: `${rowGap}px`,
-            }"
-            v-for="item in renderedCanvasCount"
-            :key="item"
-            :ref="canvasRefs[item - 1]"
-          ></canvas>
+          <RecycleScroller
+            class="pdf-scroller"
+            :items="pages"
+            :item-size="null"
+            key-field="pageNumber"
+            :prerender="10"
+            v-slot="{ item }"
+          >
+            <canvas
+              style="
+                display: block;
+                box-shadow: #a9a9a9 0px 1px 3px 0px;
+                margin-left: auto;
+                margin-right: auto;
+                width: calc(100% - 4px);
+              "
+              :style="{
+                marginBottom: `${rowGap}px`,
+              }"
+              :key="item.pageNumber"
+              :ref="(el) => setCanvasRef(el, item.pageNumber)"
+            ></canvas>
+          </RecycleScroller>
         </div>
       </div>
     </div>
