@@ -1,19 +1,18 @@
 <script setup lang="ts">
-import { ref, onUnmounted, Ref, computed, watch, onBeforeMount } from "vue";
+import { ref, onUnmounted, computed, watch, onBeforeMount, onMounted, nextTick } from "vue";
 import type { PDFDocumentProxy } from "./index";
-import { RecycleScroller, DynamicScroller, DynamicScrollerItem } from "vue-virtual-scroller";
-import "vue-virtual-scroller/dist/vue-virtual-scroller.css";
 
-let GlobalWorkerOptions: any, getDocument: any;
+// 声明全局变量
+let GlobalWorkerOptions: any = null;
+let getDocument: any = null;
 const dpr = ref(1);
+
 defineOptions({
   name: "pdf-ysk-vue3",
 });
+
 const props = withDefaults(
   defineProps<{
-    /**
-     * pdf url | Uint8Array | BASE64
-     */
     src: string | Uint8Array;
     httpHeaders?: Record<string, any>;
     withCredentials?: boolean;
@@ -24,9 +23,6 @@ const props = withDefaults(
     disableRange?: boolean;
     disableStream?: boolean;
     disableAutoFetch?: boolean;
-    // --custom--
-    adInterval?: number;
-    adContent?: string;
     showProgress?: boolean;
     progressColor?: string;
     showPageTooltip?: boolean;
@@ -36,6 +32,7 @@ const props = withDefaults(
     rowGap?: number;
     page?: number;
     cMapUrl?: string;
+    batchSize?: number; // Number of pages to render in each batch
   }>(),
   {
     src: undefined,
@@ -48,8 +45,6 @@ const props = withDefaults(
     disableRange: undefined,
     disableStream: undefined,
     disableAutoFetch: undefined,
-    adInterval: 10,
-    adContent: "",
     showProgress: true,
     progressColor: "#87ceeb",
     showPageTooltip: true,
@@ -59,6 +54,7 @@ const props = withDefaults(
     rowGap: 8,
     page: 1,
     cMapUrl: "https://unpkg.com/pdfjs-dist@3.7.107/cmaps/",
+    batchSize: 10, // Default: render 10 pages at a time
   }
 );
 
@@ -69,9 +65,6 @@ const emit = defineEmits<{
   (e: "onComplete"): void;
   (e: "onScroll", scrollOffset: number): void;
   (e: "onPageChange", page: number): void;
-  /**
-   * https://mozilla.github.io/pdf.js/api/draft/module-pdfjsLib-PDFDocumentProxy.html
-   */
   (e: "onPdfInit", pdf: PDFDocumentProxy): void;
 }>();
 
@@ -81,16 +74,8 @@ const slots = defineSlots<{
   backToTopBtn?: (props: { scrollOffset: number }) => any;
 }>();
 
-const canvasMap = new Map<number, HTMLCanvasElement>();
-const setCanvasRef = (el: any, pageNumber: number) => {
-  if (el) {
-    canvasMap.set(pageNumber, el as HTMLCanvasElement);
-    // Trigger render if needed
-    renderPage(pageNumber);
-  } else {
-    canvasMap.delete(pageNumber);
-  }
-};
+// Store canvas elements
+const canvasElements = ref<HTMLCanvasElement[]>([]);
 
 interface Option extends Record<string, any> {
   url?: string;
@@ -109,6 +94,11 @@ interface Option extends Record<string, any> {
 const loadRatio = ref(0);
 const loadingTask = ref<any>(null);
 const getDoc = () => {
+  if (!getDocument) {
+    console.error('PDF.js is not loaded yet');
+    throw new Error('PDF.js is not loaded yet');
+  }
+  
   const option: Option = {
     httpHeaders: props.httpHeaders,
     withCredentials: props.withCredentials,
@@ -121,6 +111,7 @@ const getDoc = () => {
     disableAutoFetch: props.disableAutoFetch,
     cMapUrl: props.cMapUrl,
   };
+  
   if (props.src instanceof Uint8Array) {
     option.data = props.src;
   } else if (props.src.endsWith(".pdf")) {
@@ -141,6 +132,7 @@ const getDoc = () => {
       delete option[key];
     }
   }
+  
   loadRatio.value = 0;
   loadingTask.value = getDocument(option);
   loadingTask.value.onProgress = (progressData: any) => {
@@ -156,107 +148,144 @@ const getDoc = () => {
 const totalPages = ref(0);
 const currentPage = ref(1);
 const scrollOffset = ref(0);
-const itemHeightList = ref<Array<number>>([]);
+const itemHeightList = ref<number[]>([]);
 
-// Create array of page objects for RecycleScroller
-const pages = computed(() => {
-  const result = [];
-  for (let i = 1; i <= totalPages.value; i++) {
-    result.push({ pageNumber: i });
-  }
-  return result;
-});
+const scroller = ref<HTMLDivElement>();
+const container = ref<HTMLDivElement>();
 
-const scroller = ref<HTMLDivElement>() as Ref<HTMLDivElement>;
-const container = ref<HTMLDivElement>() as Ref<HTMLDivElement>;
-
-const renderedPages = ref(new Set<number>());
-let pdf: PDFDocumentProxy;
+let pdf: PDFDocumentProxy | null = null;
 const cancelRendering = ref(false);
 const renderComplete = ref(false);
+const isRendering = ref(false);
+const renderedPages = ref(0); // Track how many pages have been rendered
 
-const renderPage = async (pageNumber: number) => {
-  if (renderedPages.value.has(pageNumber)) return;
-  
-  try {
-    const page = await pdf.getPage(pageNumber);
-    // Get canvas from the ref map or find it in DOM? 
-    // Since we use setCanvasRef, we can store the element in a map
-    const canvas = canvasMap.get(pageNumber);
-    if (!canvas) return;
-
-    const context = canvas.getContext("2d");
-    
-    // We already set the dimensions in the layout phase, but we need the viewport for rendering
-    // Re-calculate viewport to ensure correctness or store it? 
-    // Storing might consume memory, re-calculating is cheap.
-    // We need the scale again.
-    const viewport = page.getViewport({ scale: 1 });
-    const scale = ((canvas.parentNode as HTMLDivElement).clientWidth - 4) / viewport.width;
-    const scaledViewport = page.getViewport({ scale: scale * dpr.value });
-
-    canvas.width = scaledViewport.width;
-    canvas.height = scaledViewport.height;
-    canvas.style.width = `${scaledViewport.width / dpr.value}px`;
-    canvas.style.height = `${scaledViewport.height / dpr.value}px`;
-
-    await page.render({
-      canvasContext: context as CanvasRenderingContext2D,
-      viewport: scaledViewport,
-    }).promise;
-
-    renderedPages.value.add(pageNumber);
-
-    // Ad insertion logic - moved here to ensure it happens after render or we can do it in layout?
-    // If we do it in layout, the ad might load before the page is visible? 
-    // Better to keep it here or check if it needs to be visible.
-    // The original code inserted it after render. Let's keep it here.
-    if (pageNumber % props.adInterval === 0 && props.adContent) {
-        // Check if ad already exists to avoid duplicates if re-rendered (though we check renderedPages)
-        // logic from original code
-        const adWrapper = document.createElement("ins");
-        adWrapper.className = "adsbygoogle";
-        adWrapper.style.cssText = `
-  display: block;
-  text-align: center;
-  margin: 20px auto;
-  padding: 10px 0;
-  width: 90%;
-`;
-        adWrapper.setAttribute("data-ad-client", "ca-pub-4915623133359828");
-        adWrapper.setAttribute("data-ad-slot", "5506775687");
-        adWrapper.setAttribute("data-ad-format", "auto");
-        adWrapper.setAttribute("data-full-width-responsive", "true");
-
-        // Insert the <ins> AFTER the canvas
-        // Fix: Insert after the canvas itself, not the parent container
-        if (canvas.nextElementSibling?.className !== 'adsbygoogle') {
-             canvas.insertAdjacentElement("afterend", adWrapper);
-
-            // Create <script> for AdSense refresh
-            const script = document.createElement("script");
-            script.textContent =
-            "(adsbygoogle = window.adsbygoogle || []).push({});";
-
-            // Insert script after <ins>
-            adWrapper.insertAdjacentElement("afterend", script);
-        }
+// Cleanup all canvas elements
+const cleanupCanvases = () => {
+  canvasElements.value.forEach(canvas => {
+    if (canvas && canvas.parentNode) {
+      canvas.parentNode.removeChild(canvas);
     }
+  });
+  canvasElements.value = [];
+  itemHeightList.value = [];
+  renderedPages.value = 0;
+};
 
-  } catch (error) {
-    console.error(`Error rendering page ${pageNumber}:`, error);
+// Render a batch of pages
+const renderBatch = async (startPage: number, endPage: number) => {
+  if (!pdf || cancelRendering.value) return;
+  
+  const containerWidth = container.value?.clientWidth || 0;
+  if (containerWidth <= 0) return;
+  
+  for (let i = startPage; i <= endPage && i < totalPages.value; i++) {
+    if (cancelRendering.value) break;
+    
+    const pageNum = i;
+    
+    try {
+      // Get page
+      const page = await pdf.getPage(pageNum + 1);
+      
+      // Calculate scaling
+      const viewport = page.getViewport({ scale: 1 });
+      const scale = (containerWidth - 4) / viewport.width;
+      const scaledViewport = page.getViewport({ scale: scale * dpr.value });
+      const pageHeight = scaledViewport.height / dpr.value;
+      
+      // Create canvas
+      const canvas = document.createElement('canvas');
+      const canvasId = `pdf-canvas-b${Date.now()}-${Math.random().toString(36).slice(2)}-${pageNum}`;
+      canvas.id = canvasId;
+      canvas.style.cssText = `
+        display: block;
+        box-shadow: #a9a9a9 0px 1px 3px 0px;
+        margin-left: auto;
+        margin-right: auto;
+        width: calc(100% - 4px);
+        margin-bottom: ${rowGap.value}px;
+        height: ${pageHeight}px;
+      `;
+      
+      canvas.width = scaledViewport.width;
+      canvas.height = scaledViewport.height;
+      
+      // Add to DOM
+      if (container.value) {
+        container.value.appendChild(canvas);
+      }
+      canvasElements.value[pageNum] = canvas;
+      
+      // Get context and render
+      const context = canvas.getContext("2d");
+      if (!context) {
+        throw new Error('Failed to get canvas context');
+      }
+      
+      context.clearRect(0, 0, canvas.width, canvas.height);
+      
+      const renderTask = page.render({
+        canvasContext: context,
+        viewport: scaledViewport,
+      });
+      
+      await renderTask.promise;
+      
+      // Calculate and store height
+      let cumulativeHeight = 0;
+      for (let j = 0; j <= pageNum; j++) {
+        // Get height of previous page or use 0
+        const prevCanvas = canvasElements.value[j];
+        if (prevCanvas) {
+          cumulativeHeight += (prevCanvas.height / dpr.value) + (j < pageNum ? rowGap.value : 0);
+        }
+      }
+      itemHeightList.value[pageNum] = cumulativeHeight;
+      
+      // Update rendered pages count
+      renderedPages.value++;
+      
+      // Update progress
+      loadRatio.value = Math.min(100, (renderedPages.value / totalPages.value) * 100);
+      
+      // If this is the target page, scroll to it
+      if (props.page && pageNum + 1 === Math.min(props.page, totalPages.value)) {
+        const scrollToHeight = pageNum > 0 ? itemHeightList.value[pageNum - 1] + 2 : 0;
+        if (scroller.value) {
+          scroller.value.scrollTo(0, scrollToHeight);
+        }
+      }
+      
+    } catch (error: any) {
+      if (error && error.name === 'RenderingCancelledException') {
+        console.log(`Rendering cancelled for page ${pageNum + 1}`);
+        break;
+      } else {
+        console.error(`Error rendering PDF page ${pageNum + 1}:`, error);
+      }
+    }
   }
 };
 
+// Main render function - renders in batches
 const renderPDF = async () => {
-  renderComplete.value = false;
-  renderedPages.value.clear();
+  // If already rendering, cancel and restart
+  if (isRendering.value) {
+    cancelRendering.value = true;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
   
-  // Disconnect previous observer if exists
-  // if (observer) {
-  //   observer.disconnect();
-  // }
-
+  if (!loadingTask.value || !loadingTask.value.promise) {
+    console.error('Loading task is not initialized');
+    return;
+  }
+  
+  // Reset
+  cleanupCanvases();
+  renderComplete.value = false;
+  isRendering.value = true;
+  cancelRendering.value = false;
+  
   try {
     if (!pdf) {
       pdf = await loadingTask.value.promise;
@@ -264,80 +293,103 @@ const renderPDF = async () => {
       emit("onPdfInit", pdf);
     }
   } catch (error) {
-    console.error("Error loadingTask PDF:", error);
+    console.error("Error loading PDF:", error);
+    isRendering.value = false;
     return;
   }
-
-  // Initialize IntersectionObserver
-  // With virtual scrolling, we might not need this observer for rendering, 
-  // but we might need it for tracking visibility if we want to know which pages are visible?
-  // Actually, RecycleScroller handles visibility. We just render when mounted.
-  // We can keep observer for "onPageChange" logic if we want to track the current page more accurately?
-  // But handleScroll already does that using itemHeightList.
-  // So we can remove the observer for rendering purposes.
   
-  // if (observer) observer.disconnect();
-
-  let calcH = 0;
+  if (!container.value) {
+    console.error('Container not found');
+    isRendering.value = false;
+    return;
+  }
   
-  // Optimization: Fetch pages in batches to speed up layout without blocking too much
-  const BATCH_SIZE = 10;
-  for (let i = 0; i < totalPages.value; i += BATCH_SIZE) {
-    if (cancelRendering.value) {
-        cancelRendering.value = false;
-        renderPDF();
-        break;
-    }
+  const containerWidth = container.value.clientWidth;
+  if (containerWidth <= 0) {
+    console.error('Container width is 0');
+    isRendering.value = false;
+    return;
+  }
+  
+  const batchSize = props.batchSize || 10;
+  
+  // Render first batch immediately
+  const firstBatchEnd = Math.min(batchSize, totalPages.value) - 1;
+  await renderBatch(0, firstBatchEnd);
+  
+  // Set up intersection observer for lazy loading
+  setupIntersectionObserver();
+  
+  // Mark as partially complete (first batch done)
+  renderComplete.value = true;
+  isRendering.value = false;
+};
 
-    const batchPromises = [];
-    const end = Math.min(i + BATCH_SIZE, totalPages.value);
-    
-    for (let j = i; j < end; j++) {
-        batchPromises.push(pdf.getPage(j + 1));
-    }
-
-    try {
-        const pages = await Promise.all(batchPromises);
+// Intersection observer for lazy loading
+let observer: IntersectionObserver | null = null;
+const setupIntersectionObserver = () => {
+  if (!container.value || observer) return;
+  
+  observer = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting && !isRendering.value) {
+        const canvas = entry.target as HTMLCanvasElement;
+        const canvasId = canvas.id;
+        const match = canvasId.match(/pdf-canvas-b\d+-[^-]+-(\d+)/);
         
-        for (let k = 0; k < pages.length; k++) {
-            const page = pages[k];
-            const pageIndex = i + k;
-            
-            // Layout phase: Set dimensions
-            // We don't have the canvas yet, so we use the container width
-            var viewport = page.getViewport({ scale: 1 });
-            const containerWidth = container.value.clientWidth;
-            var scale = (containerWidth - 4) / viewport.width;
-            
-            const scaledViewport = page.getViewport({ scale: scale * dpr.value });
-            
-            // Store height for scrolling logic
-            itemHeightList.value[pageIndex] = calcH +=
-                scaledViewport.height / dpr.value + rowGap.value;
-
-            if (pageIndex === totalPages.value - 1) {
-                renderComplete.value = true;
-            }
+        if (match) {
+          const pageNum = parseInt(match[1]);
+          // If we're near the end, render more pages
+          if (pageNum >= renderedPages.value - 5) {
+            loadMorePages();
+          }
         }
-        
-        // Update scroll position if needed (only once per batch or per page? Per batch is fine)
-        // We need to check if we are at the target page
-        if (props.page) {
-             const targetIndex = props.page - 1;
-             if (targetIndex >= i && targetIndex < end) {
-                 scroller.value.scrollTo(0, (itemHeightList.value[targetIndex - 1] ?? 0) + 2);
-             }
-        }
+      }
+    });
+  }, {
+    root: scroller.value,
+    rootMargin: '200px 0px', // Load 200px before entering viewport
+    threshold: 0.1
+  });
+  
+  // Observe existing canvases
+  canvasElements.value.forEach(canvas => {
+    if (canvas) observer?.observe(canvas);
+  });
+};
 
-    } catch (error) {
-        console.error("Error laying out PDF pages batch:", error);
+// Load more pages when scrolling near the bottom
+const loadMorePages = async () => {
+  if (isRendering.value || cancelRendering.value || renderedPages.value >= totalPages.value) {
+    return;
+  }
+  
+  isRendering.value = true;
+  
+  const batchSize = props.batchSize || 10;
+  const startPage = renderedPages.value;
+  const endPage = Math.min(startPage + batchSize - 1, totalPages.value - 1);
+  
+  await renderBatch(startPage, endPage);
+  
+  // Observe new canvases
+  if (observer) {
+    for (let i = startPage; i <= endPage && i < canvasElements.value.length; i++) {
+      const canvas = canvasElements.value[i];
+      if (canvas) observer.observe(canvas);
     }
+  }
+  
+  isRendering.value = false;
+  
+  // If all pages rendered, disconnect observer
+  if (renderedPages.value >= totalPages.value) {
+    observer?.disconnect();
+    observer = null;
   }
 };
 
-const viewportHeight = ref(0);
-const isScrolling = ref(false);
-
+// Handle scroll
 let scrollTimer: number;
 const handleScroll = (event: any) => {
   isScrolling.value = true;
@@ -345,42 +397,51 @@ const handleScroll = (event: any) => {
   scrollTimer = setTimeout(() => {
     isScrolling.value = false;
   }, 1000);
-  scrollOffset.value = event.target.scrollTop;
-  emit("onScroll", event.target.scrollTop);
   
-  if (
-    scroller.value.scrollTop + scroller.value.offsetHeight >=
-    scroller.value.scrollHeight - 10
-  ) {
-    currentPage.value = itemHeightList.value.length;
-    return;
-  }
-
-  for (let i = 0; i < itemHeightList.value.length; i++) {
-    const height = itemHeightList.value[i];
-    if (height > event.target.scrollTop) {
-      currentPage.value = i + 1;
-      break;
+  const scrollTop = event.target.scrollTop;
+  scrollOffset.value = scrollTop;
+  emit("onScroll", scrollTop);
+  
+  // Find current page
+  if (itemHeightList.value.length > 0) {
+    for (let i = 0; i < itemHeightList.value.length; i++) {
+      const height = itemHeightList.value[i];
+      if (height > scrollTop) {
+        if (currentPage.value !== i + 1) {
+          currentPage.value = i + 1;
+          emit("onPageChange", i + 1);
+        }
+        break;
+      }
     }
+  }
+  
+  // Check if we need to load more pages (near bottom)
+  const scrollElement = event.target;
+  const nearBottom = scrollElement.scrollTop + scrollElement.clientHeight >= scrollElement.scrollHeight - 500;
+  
+  if (nearBottom && !isRendering.value && renderedPages.value < totalPages.value) {
+    loadMorePages();
   }
 };
 
-let timer: number;
-const renderPDFWithDebounce = () => {
+const viewportHeight = ref(0);
+const isScrolling = ref(false);
+
+let resizeTimer: number;
+const handleResize = () => {
   viewportHeight.value = window.innerHeight;
-  if (
-    Math.abs(innerWidth.value - window.innerWidth) > 1 &&
-    Math.abs(containerWidth.value - container.value.offsetWidth) > 1
-  ) {
-    setWidth();
-  } else {
-    setWidth();
-    return;
-  }
-  cancelRendering.value = true;
-  clearTimeout(timer);
-  timer = setTimeout(() => {
-    renderComplete.value && renderPDF();
+  
+  clearTimeout(resizeTimer);
+  
+  resizeTimer = setTimeout(async () => {
+    if (pdf && !isRendering.value) {
+      // Re-render all pages with new size
+      cancelRendering.value = true;
+      setTimeout(() => {
+        renderPDF();
+      }, 300);
+    }
   }, 500);
 };
 
@@ -388,71 +449,190 @@ const innerWidth = ref<number>(0);
 const containerWidth = ref<number>(0);
 const setWidth = () => {
   innerWidth.value = window.innerWidth;
-  containerWidth.value = container.value.offsetWidth;
+  containerWidth.value = container.value?.offsetWidth || 0;
 };
+
 const isAddEvent = ref(false);
-onBeforeMount(async () => {
-  const pdfjs = (await import("pdfjs-dist/legacy/build/pdf.min.js")).default;
-  GlobalWorkerOptions = pdfjs.GlobalWorkerOptions;
-  getDocument = pdfjs.getDocument;
-  const workerSrc = new URL(
-    "../node_modules/pdfjs-dist/legacy/build/pdf.worker.min.js",
-    import.meta.url
-  ).href;
-  GlobalWorkerOptions.workerSrc = workerSrc;
+const isPdfJsLoaded = ref(false);
+const isInitialized = ref(false);
+
+// Load PDF.js
+const loadPdfJs = async () => {
+  try {
+    console.log('Loading PDF.js...');
+    
+    let pdfjs;
+    try {
+      const pdfjsModule = await import('pdfjs-dist');
+      pdfjs = pdfjsModule.default || pdfjsModule;
+    } catch (error1) {
+      console.log('Direct import failed, trying legacy build...');
+      const pdfjsModule = await import('pdfjs-dist/legacy/build/pdf');
+      pdfjs = pdfjsModule.default || pdfjsModule;
+    }
+    
+    if (!pdfjs) {
+      throw new Error('Failed to import PDF.js');
+    }
+    
+    GlobalWorkerOptions = pdfjs.GlobalWorkerOptions;
+    getDocument = pdfjs.getDocument;
+    
+    // Set worker source
+    try {
+      const workerUrl = new URL(
+        'pdfjs-dist/build/pdf.worker.min.js',
+        import.meta.url
+      );
+      GlobalWorkerOptions.workerSrc = workerUrl.href;
+    } catch (workerError) {
+      GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.7.107/build/pdf.worker.min.js';
+    }
+    
+    isPdfJsLoaded.value = true;
+    console.log('PDF.js loaded successfully');
+    
+    initializeComponent();
+  } catch (error) {
+    console.error('Failed to load PDF.js:', error);
+  }
+};
+
+// Initialize component
+const initializeComponent = () => {
+  if (isInitialized.value) return;
+  
   dpr.value = window.devicePixelRatio || 1;
   viewportHeight.value = window.innerHeight;
-  setWidth();
-  if (
-    (typeof props.src === "string" && props.src.length > 0) ||
-    props.src instanceof Uint8Array
-  ) {
-    getDoc();
-    renderPDF();
-    window.addEventListener("resize", renderPDFWithDebounce);
-    isAddEvent.value = true;
-  }
-  watch(
-    () => props.src,
-    (src: string | Uint8Array) => {
-      if (
-        (typeof src === "string" && src.length > 0) ||
-        src instanceof Uint8Array
-      ) {
+  
+  nextTick(() => {
+    if (container.value) {
+      setWidth();
+    }
+    
+    if (
+      (typeof props.src === "string" && props.src.length > 0) ||
+      props.src instanceof Uint8Array
+    ) {
+      try {
         getDoc();
-        renderPDF();
-        if (!isAddEvent.value) {
-          window.addEventListener("resize", renderPDFWithDebounce);
-          isAddEvent.value = true;
-        }
+        setTimeout(() => {
+          renderPDF();
+        }, 200);
+        
+        window.addEventListener("resize", handleResize);
+        isAddEvent.value = true;
+      } catch (error) {
+        console.error('Failed to load PDF document:', error);
       }
     }
-  );
+    
+    isInitialized.value = true;
+  });
+};
+
+onBeforeMount(async () => {
+  loadPdfJs();
 });
 
+onMounted(() => {
+  if (isPdfJsLoaded.value) {
+    initializeComponent();
+  }
+});
+
+// Watch src changes
+watch(
+  () => props.src,
+  (src: string | Uint8Array) => {
+    if (!isPdfJsLoaded.value) {
+      console.log('PDF.js not loaded yet, delaying PDF load...');
+      return;
+    }
+    
+    if (
+      (typeof src === "string" && src.length > 0) ||
+      src instanceof Uint8Array
+    ) {
+      try {
+        cancelRendering.value = true;
+        
+        // Clean observer
+        if (observer) {
+          observer.disconnect();
+          observer = null;
+        }
+        
+        // Clean and reload
+        setTimeout(() => {
+          pdf = null;
+          cleanupCanvases();
+          getDoc();
+          
+          loadingTask.value.promise.then(() => {
+            renderPDF();
+          });
+          
+          if (!isAddEvent.value) {
+            window.addEventListener("resize", handleResize);
+            isAddEvent.value = true;
+          }
+        }, 200);
+      } catch (error) {
+        console.error('Failed to load PDF document:', error);
+      }
+    }
+  }
+);
+
+// Watch PDF.js load status
+watch(
+  () => isPdfJsLoaded.value,
+  (loaded: boolean) => {
+    if (loaded && !isInitialized.value) {
+      initializeComponent();
+    }
+  }
+);
+
+// Expose methods
 defineExpose({
-  //user set pdfWidth but pdf is blurred
-  //when container resize and widnow not resize, you can call reload
   reload: () => {
-    innerWidth.value = window.innerWidth - 2;
-    renderPDFWithDebounce();
-    setWidth();
+    cancelRendering.value = true;
+    setTimeout(() => {
+      renderPDF();
+    }, 200);
   },
+  loadMorePages: () => {
+    loadMorePages();
+  }
 });
 
 onUnmounted(() => {
-  clearTimeout(timer);
+  clearTimeout(resizeTimer);
   clearTimeout(scrollTimer);
   cancelAnimationFrame(animFrameId);
-  isAddEvent.value &&
-    window.removeEventListener("resize", renderPDFWithDebounce);
+  
+  if (observer) {
+    observer.disconnect();
+    observer = null;
+  }
+  
+  cleanupCanvases();
+  
+  if (isAddEvent.value) {
+    window.removeEventListener("resize", handleResize);
+  }
 });
+
 // --- back to top ---
 let animFrameId: number;
 const easeOutCubic = (progress: number) => {
   return 1 - Math.pow(1 - progress, 3);
 };
 const backToTop = () => {
+  if (!scroller.value) return;
+  
   const duration = 500;
   const startPos = scroller.value.scrollTop;
   const startTime = performance.now();
@@ -472,32 +652,26 @@ const backToTop = () => {
   cancelAnimationFrame(animFrameId);
   requestAnimationFrame(animateScroll);
 };
-let waitToPageFun: Function | null = null;
+
+// Watch page prop
 watch(
   () => props.page,
   (page: number) => {
-    if (props.page === currentPage.value) {
+    if (page < 1 || page > totalPages.value || !scroller.value) {
       return;
     }
-    if (page > itemHeightList.value.length) {
-      page = itemHeightList.value.length;
+    
+    // Calculate scroll position
+    let scrollPosition = 0;
+    for (let i = 0; i < page - 1 && i < itemHeightList.value.length; i++) {
+      scrollPosition += (itemHeightList.value[i + 1] - itemHeightList.value[i]) || 0;
     }
-    if (renderComplete.value) {
-      scroller.value.scrollTo(0, (itemHeightList.value[page - 2] ?? 0) + 2);
-    } else {
-      waitToPageFun = () => {
-        scroller.value.scrollTo(0, (itemHeightList.value[page - 2] ?? 0) + 2);
-      };
-    }
+    
+    scroller.value.scrollTo(0, scrollPosition);
   }
 );
-watch(
-  () => renderComplete.value,
-  (complete: boolean) => {
-    complete && waitToPageFun?.();
-    waitToPageFun = null;
-  }
-);
+
+// Watch current page
 watch(
   () => currentPage.value,
   (page: number) => {
@@ -511,7 +685,22 @@ watch(
     class="pdf-vue3-main"
     style="height: 100%; position: relative; min-height: 10px"
   >
-    <div class="pdf-vue3-container" style="height: 100%">
+    <!-- Loading state -->
+    <div 
+      v-if="!isPdfJsLoaded" 
+      style="
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        height: 100%;
+        color: #666;
+      "
+    >
+      Loading PDF library...
+    </div>
+    
+    <!-- PDF container -->
+    <div v-else class="pdf-vue3-container" style="height: 100%">
       <div
         ref="scroller"
         class="pdf-vue3-scroller"
@@ -529,42 +718,28 @@ watch(
               : `${props.pdfWidth}px`,
           }"
         >
-          <DynamicScroller
-            class="pdf-scroller"
-            :items="pages"
-            :min-item-size="50"
-            key-field="pageNumber"
-            :prerender="10"
-            v-slot="{ item, index, active }"
-          >
-            <DynamicScrollerItem
-              :item="item"
-              :active="active"
-              :size-dependencies="[item.pageNumber]"
-              :data-index="index"
-            >
-              <canvas
-              style="
-                display: block;
-                box-shadow: #a9a9a9 0px 1px 3px 0px;
-                margin-left: auto;
-                margin-right: auto;
-                width: calc(100% - 4px);
-              "
-              :style="{
-                marginBottom: `${rowGap}px`,
-              }"
-              :key="item.pageNumber"
-              :ref="(el) => setCanvasRef(el, item.pageNumber)"
-            ></canvas>
-            </DynamicScrollerItem>
-          </DynamicScroller>
+          <!-- Canvas elements are dynamically created here -->
+        </div>
+        
+        <!-- Loading more indicator -->
+        <div 
+          v-if="renderedPages < totalPages && totalPages > 0"
+          style="
+            text-align: center;
+            padding: 20px;
+            color: #666;
+            font-size: 14px;
+          "
+        >
+          Loading more pages... ({{ renderedPages }}/{{ totalPages }})
         </div>
       </div>
     </div>
+    
+    <!-- Progress bar -->
     <div
       class="pdf-vue3-progress"
-      v-if="props.showProgress"
+      v-if="props.showProgress && isPdfJsLoaded"
       style="
         position: absolute;
         left: 0;
@@ -585,9 +760,11 @@ watch(
         }"
       ></div>
     </div>
+    
+    <!-- Page tooltip -->
     <div
       class="pdf-vue3-pageTooltip"
-      v-if="props.showPageTooltip"
+      v-if="props.showPageTooltip && isPdfJsLoaded"
       style="
         position: absolute;
         left: 12px;
@@ -619,9 +796,11 @@ watch(
         {{ currentPage }}/{{ totalPages }}
       </div>
     </div>
+    
+    <!-- Back to top button -->
     <div
       class="pdf-vue3-backToTopBtn"
-      v-if="props.showBackToTopBtn"
+      v-if="props.showBackToTopBtn && isPdfJsLoaded"
       @click="backToTop"
       style="
         position: absolute;
