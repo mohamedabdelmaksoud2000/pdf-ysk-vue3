@@ -99,7 +99,12 @@ interface Option extends Record<string, any> {
   disableAutoFetch?: boolean;
 }
 
-const loadRatio = ref(0);
+const downloadRatio = ref(0);
+const renderRatio = ref(0);
+const loadRatio = computed(() => {
+  // Keep bar moving smoothly across both phases: download (0-50) + render (50-100).
+  return Math.min(100, downloadRatio.value * 0.5 + renderRatio.value * 0.5);
+});
 const loadingTask = ref<any>(null);
 const getDoc = () => {
   if (!getDocument) {
@@ -141,14 +146,23 @@ const getDoc = () => {
     }
   }
 
-  loadRatio.value = 0;
+  downloadRatio.value = 0;
+  renderRatio.value = 0;
+  emit("onProgress", loadRatio.value);
   loadingTask.value = getDocument(option);
   loadingTask.value.onProgress = (progressData: any) => {
-    const ratio = (progressData.loaded / progressData.total) * 100;
-    loadRatio.value = ratio >= 100 ? 100 : ratio;
-    emit("onProgress", loadRatio.value);
+    const total = Number(progressData?.total || 0);
+    const loaded = Number(progressData?.loaded || 0);
+    // Some servers do not provide total bytes; keep ratio at 0 until we can measure.
+    if (total > 0) {
+      const ratio = (loaded / total) * 100;
+      downloadRatio.value = ratio >= 100 ? 100 : ratio;
+      emit("onProgress", loadRatio.value);
+    }
   };
   loadingTask.value.promise.then(() => {
+    downloadRatio.value = 100;
+    emit("onProgress", loadRatio.value);
     emit("onComplete");
   });
 };
@@ -256,11 +270,14 @@ const renderBatch = async (startPage: number, endPage: number) => {
       // Update rendered pages count
       renderedPages.value++;
 
-      // Update progress
-      loadRatio.value = Math.min(
-        100,
-        (renderedPages.value / totalPages.value) * 100
-      );
+      // Update render progress (second half of progress bar).
+      if (totalPages.value > 0) {
+        renderRatio.value = Math.min(
+          100,
+          (renderedPages.value / totalPages.value) * 100
+        );
+        emit("onProgress", loadRatio.value);
+      }
 
       // If this is the target page, scroll to it
       if (
@@ -299,6 +316,8 @@ const renderPDF = async () => {
 
   // Reset
   cleanupCanvases();
+  renderRatio.value = 0;
+  emit("onProgress", loadRatio.value);
   renderComplete.value = false;
   isRendering.value = true;
   cancelRendering.value = false;
@@ -341,6 +360,11 @@ const renderPDF = async () => {
   // Mark as partially complete (first batch done)
   renderComplete.value = true;
   isRendering.value = false;
+
+  if (renderedPages.value >= totalPages.value && totalPages.value > 0) {
+    renderRatio.value = 100;
+    emit("onProgress", loadRatio.value);
+  }
 };
 
 // Intersection observer for lazy loading
