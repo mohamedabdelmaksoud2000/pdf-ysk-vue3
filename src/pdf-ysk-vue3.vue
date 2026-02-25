@@ -514,6 +514,9 @@ const setWidth = () => {
 const isAddEvent = ref(false);
 const isPdfJsLoaded = ref(false);
 const isInitialized = ref(false);
+const showInitialLoader = computed(() => {
+  return !isPdfJsLoaded.value || (!renderComplete.value && renderedPages.value === 0);
+});
 
 // Load PDF.js
 const loadPdfJs = async () => {
@@ -749,22 +752,8 @@ watch(
     class="pdf-vue3-main"
     style="height: 100%; position: relative; min-height: 10px"
   >
-    <!-- Loading state -->
-    <div
-      v-if="!isPdfJsLoaded"
-      style="
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        height: 100%;
-        color: #666;
-      "
-    >
-      Loading PDF library...
-    </div>
-
     <!-- PDF container -->
-    <div v-else class="pdf-vue3-container" style="height: 100%">
+    <div v-if="isPdfJsLoaded" class="pdf-vue3-container" style="height: 100%">
       <div
         ref="scroller"
         class="pdf-vue3-scroller"
@@ -788,16 +777,15 @@ watch(
         <!-- Loading more indicator -->
         <div
           v-if="renderedPages < totalPages && totalPages > 0"
-          style="
-            text-align: center;
-            padding: 20px;
-            color: #666;
-            font-size: 14px;
-          "
+          class="pdf-vue3-loading-more"
         >
-          Loading more pages... ({{ renderedPages }}/{{ totalPages }})
+          <div class="pdf-vue3-loader-ring pdf-vue3-loader-ring--small"></div>
         </div>
       </div>
+    </div>
+
+    <div v-if="showInitialLoader" class="pdf-vue3-loader-overlay">
+      <div class="pdf-vue3-loader-ring"></div>
     </div>
 
     <!-- Progress bar -->
@@ -919,3 +907,53 @@ watch(
     </div>
   </div>
 </template>
+
+<style scoped>
+.pdf-vue3-loader-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(
+    180deg,
+    rgba(232, 245, 255, 0.92) 0%,
+    rgba(220, 238, 255, 0.78) 100%
+  );
+  backdrop-filter: blur(2px);
+  pointer-events: none;
+}
+
+.pdf-vue3-loader-ring {
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  border: 8px solid rgba(30, 136, 229, 0.18);
+  border-top-color: #1e88e5;
+  border-right-color: #42a5f5;
+  box-shadow:
+    0 0 0 1px rgba(30, 136, 229, 0.08),
+    0 12px 28px rgba(30, 136, 229, 0.28);
+  animation: pdf-vue3-spin 0.9s linear infinite;
+}
+
+.pdf-vue3-loading-more {
+  display: flex;
+  justify-content: center;
+  padding: 20px;
+}
+
+.pdf-vue3-loader-ring--small {
+  width: 44px;
+  height: 44px;
+  border-width: 5px;
+  box-shadow: 0 8px 20px rgba(30, 136, 229, 0.2);
+}
+
+@keyframes pdf-vue3-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+</style>
